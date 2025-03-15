@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebAuthn Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 10px 5px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .error {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        .info {
+            background-color: #d9edf7;
+            color: #31708f;
+        }
+        pre {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebAuthn Demo</h1>
+    <p>This demo shows how to use the Web Authentication API for passwordless authentication.</p>
+
+    <div class="container">
+        <h2>Step 1: Check Browser Support</h2>
+        <button id="check-support">Check WebAuthn Support</button>
+        <div id="support-result" class="hidden info"></div>
+    </div>
+
+    <div class="container">
+        <h2>Step 2: Register a New Credential</h2>
+        <p>Register a new credential using your device's authenticator (fingerprint, face recognition, or security key).</p>
+        <div>
+            <label for="username">Username:</label>
+            <input type="email" id="username" placeholder="user@example.com">
+        </div>
+        <div>
+            <label for="display-name">Display Name:</label>
+            <input type="text" id="display-name" placeholder="Your Name">
+        </div>
+        <button id="register-button" disabled>Register</button>
+    </div>
+
+    <div class="container">
+        <h2>Step 3: Authenticate</h2>
+        <p>Authenticate using the registered credential.</p>
+        <button id="login-button" disabled>Login</button>
+    </div>
+
+    <div id="status" class="hidden"></div>
+    <div id="details" class="hidden">
+        <h3>Credential Details:</h3>
+        <pre id="credential-details"></pre>
+    </div>
+
+    <script>
+        // Check if the browser supports WebAuthn
+        document.getElementById('check-support').addEventListener('click', function() {
+            const supportResult = document.getElementById('support-result');
+            supportResult.classList.remove('hidden');
+            
+            if (window.PublicKeyCredential) {
+                PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+                    .then(available => {
+                        if (available) {
+                            supportResult.textContent = '✅ WebAuthn is fully supported in this browser with platform authenticator.';
+                            supportResult.className = 'info success';
+                        } else {
+                            supportResult.textContent = '⚠️ WebAuthn is supported, but platform authenticator is not available. You may need to use a security key.';
+                            supportResult.className = 'info';
+                        }
+                        document.getElementById('register-button').disabled = false;
+                    });
+            } else {
+                supportResult.textContent = '❌ WebAuthn is not supported in this browser.';
+                supportResult.className = 'info error';
+            }
+        });
+
+        // Helper functions for ArrayBuffer <-> Base64 conversion
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
+        function base64ToArrayBuffer(base64) {
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        // Function to show status messages
+        function showStatus(message, type) {
+            const statusElement = document.getElementById('status');
+            statusElement.textContent = message;
+            statusElement.className = type;
+            statusElement.classList.remove('hidden');
+        }
+
+        // Function to create a new credential
+        async function registerWebAuthnCredential() {
+            const username = document.getElementById('username').value;
+            const displayName = document.getElementById('display-name').value;
+            
+            if (!username || !displayName) {
+                showStatus('Please enter a username and display name.', 'error');
+                return;
+            }
+
+            try {
+                // Generate a random user ID
+                const userId = new Uint8Array(16);
+                window.crypto.getRandomValues(userId);
+                
+                // Generate a random challenge
+                const challenge = new Uint8Array(32);
+                window.crypto.getRandomValues(challenge);
+                
+                // Create PublicKeyCredentialCreationOptions
+                const publicKeyCredentialCreationOptions = {
+                    challenge,
+                    rp: {
+                        name: "WebAuthn Demo",
+                        id: window.location.hostname
+                    },
+                    user: {
+                        id: userId,
+                        name: username,
+                        displayName: displayName
+                    },
+                    pubKeyCredParams: [
+                        { type: "public-key", alg: -7 },  // ES256
+                        { type: "public-key", alg: -257 } // RS256
+                    ],
+                    authenticatorSelection: {
+                        authenticatorAttachment: "platform",
+                        userVerification: "preferred",
+                        requireResidentKey: false
+                    },
+                    timeout: 60000,
+                    attestation: "direct"
+                };
+                
+                // Create the credential
+                const credential = await navigator.credentials.create({
+                    publicKey: publicKeyCredentialCreationOptions
+                });
+                
+                // Convert credential data for sending to server
+                const credentialData = {
+                    id: credential.id,
+                    rawId: arrayBufferToBase64(credential.rawId),
+                    type: credential.type,
+                    response: {
+                        attestationObject: arrayBufferToBase64(credential.response.attestationObject),
+                        clientDataJSON: arrayBufferToBase64(credential.response.clientDataJSON)
+                    }
+                };
+                
+                // Store credential ID for later use
+                localStorage.setItem('credentialId', credentialData.rawId);
+                localStorage.setItem('username', username);
+                
+                // Display success message
+                showStatus('Registration successful! You can now authenticate.', 'success');
+                document.getElementById('login-button').disabled = false;
+                
+                // Display credential details
+                document.getElementById('details').classList.remove('hidden');
+                document.getElementById('credential-details').textContent = JSON.stringify(credentialData, null, 2);
+                
+                return credentialData;
+                
+            } catch (error) {
+                showStatus(`Registration failed: ${error.message}`, 'error');
+                console.error("Error creating credential:", error);
+                throw error;
+            }
+        }
+
+        // Function to authenticate with a credential
+        async function authenticateWithWebAuthn() {
+            try {
+                // Get credential ID from previous registration
+                const credentialId = localStorage.getItem('credentialId');
+                
+                if (!credentialId) {
+                    showStatus("No credential found. Please register first.", 'error');
+                    throw new Error("No credential found. Please register first.");
+                }
+                
+                // Generate a random challenge
+                const challenge = new Uint8Array(32);
+                window.crypto.getRandomValues(challenge);
+                
+                // Create PublicKeyCredentialRequestOptions
+                const publicKeyCredentialRequestOptions = {
+                    challenge,
+                    rpId: window.location.hostname,
+                    allowCredentials: [{
+                        id: base64ToArrayBuffer(credentialId),
+                        type: 'public-key',
+                        transports: ['internal']
+                    }],
+                    userVerification: "preferred",
+                    timeout: 60000
+                };
+                
+                // Request the credential
+                const assertion = await navigator.credentials.get({
+                    publicKey: publicKeyCredentialRequestOptions
+                });
+                
+                // Convert assertion data for sending to server
+                const assertionData = {
+                    id: assertion.id,
+                    rawId: arrayBufferToBase64(assertion.rawId),
+                    type: assertion.type,
+                    response: {
+                        authenticatorData: arrayBufferToBase64(assertion.response.authenticatorData),
+                        clientDataJSON: arrayBufferToBase64(assertion.response.clientDataJSON),
+                        signature: arrayBufferToBase64(assertion.response.signature),
+                        userHandle: assertion.response.userHandle ? arrayBufferToBase64(assertion.response.userHandle) : null
+                    }
+                };
+                
+                // Display success message
+                showStatus(`Authentication successful! Welcome back, ${localStorage.getItem('username')}!`, 'success');
+                
+                // Display assertion details
+                document.getElementById('details').classList.remove('hidden');
+                document.getElementById('credential-details').textContent = JSON.stringify(assertionData, null, 2);
+                
+                return assertionData;
+                
+            } catch (error) {
+                showStatus(`Authentication failed: ${error.message}`, 'error');
+                console.error("Error during authentication:", error);
+                throw error;
+            }
+        }
+
+        // Register button click handler
+        document.getElementById('register-button').addEventListener('click', async () => {
+            try {
+                await registerWebAuthnCredential();
+            } catch (error) {
+                console.error(error);
+            }
+        });
+
+        // Login button click handler
+        document.getElementById('login-button').addEventListener('click', async () => {
+            try {
+                await authenticateWithWebAuthn();
+            } catch (error) {
+                console.error(error);
+            }
+        });
+
+        // Check if there's a credential already stored
+        if (localStorage.getItem('credentialId')) {
+            document.getElementById('login-button').disabled = false;
+        }
+    </script>
+</body>
+</html>
