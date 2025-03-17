@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebAuthn Demo</title>
+    <title>WebAuthn Demo with YubiKey Support</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -64,11 +64,17 @@
         .hidden {
             display: none;
         }
+        .options {
+            margin: 10px 0;
+        }
+        .radio-group {
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
-    <h1>WebAuthn Demo</h1>
-    <p>This demo shows how to use the Web Authentication API for passwordless authentication.</p>
+    <h1>WebAuthn Demo with YubiKey Support</h1>
+    <p>This demo shows how to use the Web Authentication API for passwordless authentication with YubiKey or platform authenticators.</p>
 
     <div class="container">
         <h2>Step 1: Check Browser Support</h2>
@@ -78,7 +84,7 @@
 
     <div class="container">
         <h2>Step 2: Register a New Credential</h2>
-        <p>Register a new credential using your device's authenticator (fingerprint, face recognition, or security key).</p>
+        <p>Register a new credential using your YubiKey or device's built-in authenticator.</p>
         <div>
             <label for="username">Username:</label>
             <input type="email" id="username" placeholder="user@example.com">
@@ -87,13 +93,32 @@
             <label for="display-name">Display Name:</label>
             <input type="text" id="display-name" placeholder="Your Name">
         </div>
+        
+        <div class="options">
+            <h3>Authenticator Options:</h3>
+            <div class="radio-group">
+                <input type="radio" id="platform" name="authenticator-type" value="platform" checked>
+                <label for="platform">Platform Authenticator (Built-in biometric)</label>
+            </div>
+            <div class="radio-group">
+                <input type="radio" id="cross-platform" name="authenticator-type" value="cross-platform">
+                <label for="cross-platform">Cross-Platform Authenticator (YubiKey)</label>
+            </div>
+        </div>
+        
         <button id="register-button" disabled>Register</button>
     </div>
 
     <div class="container">
         <h2>Step 3: Authenticate</h2>
-        <p>Authenticate using the registered credential.</p>
+        <p>Authenticate using the registered credential. If you registered with a YubiKey, please ensure it's connected.</p>
         <button id="login-button" disabled>Login</button>
+    </div>
+    
+    <div class="container">
+        <h2>Reset</h2>
+        <p>Clear all stored credentials from this browser.</p>
+        <button id="reset-button">Reset Credentials</button>
     </div>
 
     <div id="status" class="hidden"></div>
@@ -109,17 +134,29 @@
             supportResult.classList.remove('hidden');
             
             if (window.PublicKeyCredential) {
-                PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
-                    .then(available => {
-                        if (available) {
-                            supportResult.textContent = '✅ WebAuthn is fully supported in this browser with platform authenticator.';
-                            supportResult.className = 'info success';
-                        } else {
-                            supportResult.textContent = '⚠️ WebAuthn is supported, but platform authenticator is not available. You may need to use a security key.';
-                            supportResult.className = 'info';
-                        }
-                        document.getElementById('register-button').disabled = false;
-                    });
+                Promise.all([
+                    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(),
+                    'isExternalCTAP2SecurityKeySupported' in PublicKeyCredential ?
+                        PublicKeyCredential.isExternalCTAP2SecurityKeySupported() :
+                        Promise.resolve(true)
+                ]).then(([platformAvailable, externalSupported]) => {
+                    let message = '';
+                    if (platformAvailable && externalSupported) {
+                        message = '✅ WebAuthn is fully supported in this browser with both platform authenticator and external security keys.';
+                        supportResult.className = 'info success';
+                    } else if (platformAvailable) {
+                        message = '✅ WebAuthn is supported with platform authenticator (built-in biometric).';
+                        supportResult.className = 'info success';
+                    } else if (externalSupported) {
+                        message = '✅ WebAuthn is supported with external security keys like YubiKey.';
+                        supportResult.className = 'info success';
+                    } else {
+                        message = '⚠️ WebAuthn is supported, but neither platform authenticator nor external security keys are fully supported.';
+                        supportResult.className = 'info';
+                    }
+                    supportResult.textContent = message;
+                    document.getElementById('register-button').disabled = false;
+                });
             } else {
                 supportResult.textContent = '❌ WebAuthn is not supported in this browser.';
                 supportResult.className = 'info error';
@@ -163,6 +200,9 @@
                 return;
             }
 
+            // Get authenticator type selection
+            const authenticatorType = document.querySelector('input[name="authenticator-type"]:checked').value;
+
             try {
                 // Generate a random user ID
                 const userId = new Uint8Array(16);
@@ -189,7 +229,7 @@
                         { type: "public-key", alg: -257 } // RS256
                     ],
                     authenticatorSelection: {
-                        authenticatorAttachment: "platform",
+                        authenticatorAttachment: authenticatorType === "platform" ? "platform" : "cross-platform",
                         userVerification: "preferred",
                         requireResidentKey: false
                     },
@@ -214,11 +254,18 @@
                 };
                 
                 // Store credential ID for later use
-                localStorage.setItem('credentialId', credentialData.rawId);
-                localStorage.setItem('username', username);
+                const storedCredentials = JSON.parse(localStorage.getItem('webauthnCredentials') || '[]');
+                storedCredentials.push({
+                    id: credential.id,
+                    rawId: credentialData.rawId,
+                    username: username,
+                    authenticatorType: authenticatorType,
+                    createdAt: new Date().toISOString()
+                });
+                localStorage.setItem('webauthnCredentials', JSON.stringify(storedCredentials));
                 
                 // Display success message
-                showStatus('Registration successful! You can now authenticate.', 'success');
+                showStatus(`Registration successful! You can now authenticate with your ${authenticatorType === "platform" ? "built-in authenticator" : "YubiKey"}.`, 'success');
                 document.getElementById('login-button').disabled = false;
                 
                 // Display credential details
@@ -237,12 +284,12 @@
         // Function to authenticate with a credential
         async function authenticateWithWebAuthn() {
             try {
-                // Get credential ID from previous registration
-                const credentialId = localStorage.getItem('credentialId');
+                // Get credential IDs from previous registrations
+                const storedCredentials = JSON.parse(localStorage.getItem('webauthnCredentials') || '[]');
                 
-                if (!credentialId) {
-                    showStatus("No credential found. Please register first.", 'error');
-                    throw new Error("No credential found. Please register first.");
+                if (storedCredentials.length === 0) {
+                    showStatus("No credentials found. Please register first.", 'error');
+                    throw new Error("No credentials found. Please register first.");
                 }
                 
                 // Generate a random challenge
@@ -253,11 +300,11 @@
                 const publicKeyCredentialRequestOptions = {
                     challenge,
                     rpId: window.location.hostname,
-                    allowCredentials: [{
-                        id: base64ToArrayBuffer(credentialId),
+                    allowCredentials: storedCredentials.map(cred => ({
+                        id: base64ToArrayBuffer(cred.rawId),
                         type: 'public-key',
-                        transports: ['internal']
-                    }],
+                        transports: cred.authenticatorType === 'platform' ? ['internal'] : ['usb', 'nfc', 'ble']
+                    })),
                     userVerification: "preferred",
                     timeout: 60000
                 };
@@ -280,8 +327,13 @@
                     }
                 };
                 
+                // Find the credential in our stored list
+                const matchedCredential = storedCredentials.find(cred => cred.id === assertion.id);
+                const username = matchedCredential ? matchedCredential.username : 'user';
+                const authenticatorType = matchedCredential ? matchedCredential.authenticatorType : 'unknown';
+                
                 // Display success message
-                showStatus(`Authentication successful! Welcome back, ${localStorage.getItem('username')}!`, 'success');
+                showStatus(`Authentication successful! Welcome back, ${username}! (Authenticated with ${authenticatorType === "platform" ? "built-in authenticator" : "YubiKey"})`, 'success');
                 
                 // Display assertion details
                 document.getElementById('details').classList.remove('hidden');
@@ -314,8 +366,17 @@
             }
         });
 
-        // Check if there's a credential already stored
-        if (localStorage.getItem('credentialId')) {
+        // Reset button click handler
+        document.getElementById('reset-button').addEventListener('click', () => {
+            localStorage.removeItem('webauthnCredentials');
+            document.getElementById('login-button').disabled = true;
+            document.getElementById('details').classList.add('hidden');
+            showStatus('All credentials have been cleared.', 'info');
+        });
+
+        // Check if there are credentials already stored
+        const storedCredentials = JSON.parse(localStorage.getItem('webauthnCredentials') || '[]');
+        if (storedCredentials.length > 0) {
             document.getElementById('login-button').disabled = false;
         }
     </script>
